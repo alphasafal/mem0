@@ -3,6 +3,7 @@ import os
 import pickle
 import tempfile
 import threading
+from datetime import datetime, timezone
 from unittest.mock import Mock, patch
 
 import faiss
@@ -275,6 +276,38 @@ def test_update_cannot_recreate_a_vector_deleted_during_the_update(tmp_path):
     assert store.update("m1", vector=[0.0, 1.0], payload={"data": "new"}) is True
     deleter.join()
     assert store.get("m1") is None and store.index.ntotal == 0
+
+
+@pytest.mark.parametrize(
+    "bad_value", [datetime(2026, 1, 1, tzinfo=timezone.utc), np.float32(0.9)], ids=["datetime", "numpy_float32"]
+)
+def test_insert_rejects_payload_that_is_not_json_serializable(tmp_path, bad_value):
+    """The docstore is saved as JSON. A payload it can't hold used to be accepted, then truncate
+    the file on disk, so every other record was gone after a restart."""
+    path = str(tmp_path / "store")
+    store = FAISS(collection_name="c", path=path, embedding_model_dims=2)
+    store.insert([[1.0, 0.0]], [{"data": "bob likes tea", "user_id": "bob"}], ["bob-1"])
+
+    with pytest.raises(ValueError, match="alice-1"):
+        store.insert([[0.0, 1.0]], [{"data": "alice note", "seen_at": bad_value}], ["alice-1"])
+
+    assert store.index.ntotal == 1 and "alice-1" not in store.docstore
+    reopened = FAISS(collection_name="c", path=path, embedding_model_dims=2)
+    assert reopened.get("bob-1").payload["data"] == "bob likes tea"
+    assert reopened.index.ntotal == 1
+
+
+def test_update_rejects_payload_that_is_not_json_serializable(tmp_path):
+    path = str(tmp_path / "store")
+    store = FAISS(collection_name="c", path=path, embedding_model_dims=2)
+    store.insert([[1.0, 0.0]], [{"data": "old"}], ["m1"])
+
+    with pytest.raises(ValueError, match="m1"):
+        store.update("m1", vector=[0.0, 1.0], payload={"data": "new", "seen_at": datetime(2026, 1, 1)})
+
+    assert store.get("m1").payload == {"data": "old"} and store.index.ntotal == 1
+    reopened = FAISS(collection_name="c", path=path, embedding_model_dims=2)
+    assert reopened.get("m1").payload == {"data": "old"}
 
 
 def test_get(faiss_instance):
