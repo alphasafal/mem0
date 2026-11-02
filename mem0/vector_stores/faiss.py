@@ -238,6 +238,21 @@ class FAISS(VectorStoreBase):
             self.docstore = {}
             self.index_to_id = {}
 
+    def _check_payloads_serializable(self, ids: List[str], payloads: List[Dict]):
+        """Reject payloads the JSON docstore can't hold, before anything is changed.
+
+        _save() writes the docstore as JSON. A value like a datetime or a numpy scalar makes that write
+        fail partway, which truncates the file on disk and makes every later save fail too.
+        """
+        for vector_id, payload in zip(ids, payloads):
+            try:
+                json.dumps(payload)
+            except (TypeError, ValueError) as e:
+                raise ValueError(
+                    f"Payload for id {vector_id!r} is not JSON-serializable, so the FAISS store can't persist it: "
+                    f"{e}. Convert values such as datetime objects or numpy scalars to str, int or float first."
+                ) from e
+
     def _save(self):
         """Save FAISS index and docstore to disk using JSON format (secure)."""
         if not self.path or not self.index:
@@ -371,6 +386,8 @@ class FAISS(VectorStoreBase):
 
         if len(vectors) != len(ids) or len(vectors) != len(payloads):
             raise ValueError("Vectors, payloads, and IDs must have the same length")
+
+        self._check_payloads_serializable(ids, payloads)
 
         vectors_np = np.array(vectors, dtype=np.float32)
 
@@ -518,6 +535,9 @@ class FAISS(VectorStoreBase):
 
         if vector_id not in self.docstore:
             return False
+
+        if payload is not None:
+            self._check_payloads_serializable([vector_id], [payload])
 
         current_payload = self.docstore[vector_id].copy()
 
